@@ -42,10 +42,45 @@ impl Encoder<PluginInput> for JsonSerializer {
         &self,
         reader: &mut impl std::io::BufRead,
     ) -> Result<Option<PluginInput>, nu_protocol::ShellError> {
-        let mut de = serde_json::Deserializer::from_reader(reader);
-        PluginInput::deserialize(&mut de)
-            .map(Some)
-            .or_else(json_decode_err)
+        #[cfg(debug_assertions)]
+        {
+            // Try to read the data as a line first to capture for debugging
+            let mut buffer = Vec::new();
+            match reader.read_until(b'\n', &mut buffer) {
+                Ok(0) => return Ok(None),
+                Ok(_) => {
+                    // Try to convert to string for debugging
+                    match String::from_utf8(buffer.clone()) {
+                        Ok(json_str) => {
+                            let mut de = serde_json::Deserializer::from_str(&json_str);
+                            PluginInput::deserialize(&mut de)
+                                .map(Some)
+                                .or_else(|err| json_decode_err_with_json(err, &json_str))
+                        }
+                        Err(_) => {
+                            // If not valid UTF-8, fall back to stream parsing
+                            let mut cursor = std::io::Cursor::new(buffer);
+                            let mut de = serde_json::Deserializer::from_reader(&mut cursor);
+                            PluginInput::deserialize(&mut de)
+                                .map(Some)
+                                .or_else(json_decode_err)
+                        }
+                    }
+                }
+                Err(err) => Err(ShellError::Io(IoError::new_internal(
+                    err,
+                    "Failed to read JSON data",
+                    location!(),
+                )))
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let mut de = serde_json::Deserializer::from_reader(reader);
+            PluginInput::deserialize(&mut de)
+                .map(Some)
+                .or_else(json_decode_err)
+        }
     }
 }
 
@@ -69,10 +104,45 @@ impl Encoder<PluginOutput> for JsonSerializer {
         &self,
         reader: &mut impl std::io::BufRead,
     ) -> Result<Option<PluginOutput>, ShellError> {
-        let mut de = serde_json::Deserializer::from_reader(reader);
-        PluginOutput::deserialize(&mut de)
-            .map(Some)
-            .or_else(json_decode_err)
+        #[cfg(debug_assertions)]
+        {
+            // Try to read the data as a line first to capture for debugging
+            let mut buffer = Vec::new();
+            match reader.read_until(b'\n', &mut buffer) {
+                Ok(0) => return Ok(None),
+                Ok(_) => {
+                    // Try to convert to string for debugging
+                    match String::from_utf8(buffer.clone()) {
+                        Ok(json_str) => {
+                            let mut de = serde_json::Deserializer::from_str(&json_str);
+                            PluginOutput::deserialize(&mut de)
+                                .map(Some)
+                                .or_else(|err| json_decode_err_with_json(err, &json_str))
+                        }
+                        Err(_) => {
+                            // If not valid UTF-8, fall back to stream parsing
+                            let mut cursor = std::io::Cursor::new(buffer);
+                            let mut de = serde_json::Deserializer::from_reader(&mut cursor);
+                            PluginOutput::deserialize(&mut de)
+                                .map(Some)
+                                .or_else(json_decode_err)
+                        }
+                    }
+                }
+                Err(err) => Err(ShellError::Io(IoError::new_internal(
+                    err,
+                    "Failed to read JSON data",
+                    nu_protocol::location!(),
+                )))
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let mut de = serde_json::Deserializer::from_reader(reader);
+            PluginOutput::deserialize(&mut de)
+                .map(Some)
+                .or_else(json_decode_err)
+        }
     }
 }
 
@@ -104,6 +174,24 @@ fn json_decode_err<T>(err: serde_json::Error) -> Result<Option<T>, ShellError> {
     } else {
         Err(ShellError::PluginFailedToDecode {
             msg: err.to_string(),
+        })
+    }
+}
+
+/// Handle a `serde_json` decode error with original JSON (debug mode only).
+#[cfg(debug_assertions)]
+fn json_decode_err_with_json<T>(err: serde_json::Error, json: &str) -> Result<Option<T>, ShellError> {
+    if err.is_eof() {
+        Ok(None)
+    } else if err.is_io() {
+        Err(ShellError::Io(IoError::new_internal(
+            shell_error::io::ErrorKind::from_std(err.io_error_kind().expect("is io")),
+            "Could not decode with json",
+            nu_protocol::location!(),
+        )))
+    } else {
+        Err(ShellError::PluginFailedToDecode {
+            msg: format!("{} | Original JSON: {}", err, json.trim()),
         })
     }
 }
